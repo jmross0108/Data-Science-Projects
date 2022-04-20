@@ -1,0 +1,252 @@
+---
+title: "Final Project"
+author: "James Ross"
+date: "12/3/2020"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+First read in the data that was collected by the WHO and UNESCO. We should take a look at the data first. Looking at the mean, min and max, and number of NAs per variable. 
+```{r}
+library(ggplot2)
+library(caret)
+library(dplyr)
+library(data.table)
+library(countrycode)
+library(glmnet)
+library(lmridge)
+library(randomForest)
+library(mlbench)
+library(e1071)
+
+
+setwd("C:\\Users\\jmros\\OneDrive\\Desktop\\Statistical Analysis")
+life_expectancy <- read.csv("who_life_exp.csv", header = TRUE, stringsAsFactors = T)
+
+summary(life_expectancy)
+```
+
+We notice that for several variables the mean and median values have a large difference, this suggests there may be bias in the data. We should first decide what to do with NA values. The variables with a large amount of NAs are Education Spending, percent of GDP spent on healthcare, and GNI per capita, HIV prevalence. We want to avoid simply removing all rows with NA because this will likely cause unnecessary skewness to the variables Country and Years. 
+
+I believe the best approach to filling these missing values is to replace them with their respective means based on country. For this study we will remove the variables country and year as we are more interested in looking at the problem from a global perspective. However, for the purposes of cleaning up NAs I beleive this was the best approach to prevent bias in our independent variables.
+
+```{r}
+#get mean values based on country
+life_expectancy <- life_expectancy %>%
+  group_by(country) %>% 
+  mutate(education = replace(education, is.na(education), mean(education, na.rm = TRUE)))
+
+life_expectancy <- life_expectancy %>%
+  group_by(country) %>% 
+  mutate(hiv = replace(hiv, is.na(hiv), mean(hiv, na.rm = TRUE)))
+
+life_expectancy <- life_expectancy %>%
+  group_by(country) %>% 
+  mutate(gghe.d = replace(gghe.d, is.na(gghe.d), mean(gghe.d, na.rm = TRUE)))
+
+life_expectancy <- life_expectancy %>%
+  group_by(country) %>% 
+  mutate(gni = replace(gni, is.na(gni), mean(gni, na.rm = TRUE)))
+
+drops <- c("country", "year")
+life_expectancy <- life_expectancy[,!(names(life_expectancy) %in% drops)]
+
+```
+
+Now that the NAs for variables with large amounts of NAs have been reasonably replaced, it is safe to remove the remaining rows with NA values while maintaining the integrity of the data. We also desire to code the country variable into a numeric value to assist R with the modeling process.
+
+```{r}
+life_expectancy <- na.omit(life_expectancy)
+```
+
+
+The next step is to clean the data, to look for any abnormalities, discrepancies such as outliers, and the possible need to transform or normalize data. To get a general idea of how the variables are distributed I will use histogram plots for each to see if they are skewed or have potential anomalies. We skip this process for the variables country and year as we assume that there are roughly 16 entries for all 183 countries contributing data and as such the curve should be flat.
+
+```{r}
+hist(life_expectancy$life.expentancy, main = "Life Expentancy")
+hist(life_expectancy$thinnes, main = "Thinness")
+hist(life_expectancy$obesity, main = "Obesity")
+hist(life_expectancy$measles, main = "Measles Vaccine")
+hist(life_expectancy$polio, main = "Polio Vaccine")
+hist(life_expectancy$diphtheria, main = "Diptheria Vaccine")
+hist(life_expectancy$water, main = "Drinkable Water Access")
+hist(life_expectancy$gghe.d, main = "Health Expenditure")
+hist(life_expectancy$pop, main = "Population")
+hist(life_expectancy$infant, main = "Infant Mortality Rate")
+hist(life_expectancy$hiv, main = "HIV Prevalence")
+hist(life_expectancy$gni, main = "GNI per Capit")
+hist(life_expectancy$education, main = "Education Expenditure")
+
+```
+
+After viewing the distributions, we notice that most of the variables have a skewed distribution. Education expenditure seems to be normally distributed. In order to have the most accurate results we desire a normal distribution of all of our variables, in order to achieve this the data must be transformed. The first method we will use is the min-max method. 
+
+```{r}
+#Create the min-max normalization function
+min_max_norm <- function(x){
+  return((x-min(x))/(max(x)-min(x)))
+} 
+
+#apply to the data
+
+life_expectancy_norm <- as.data.frame(lapply(life_expectancy, min_max_norm))
+
+#next look at the plots
+
+hist(life_expectancy_norm$life.expentancy, main = "Life Expentancy")
+hist(life_expectancy_norm$thinnes, main = "Thinness")
+hist(life_expectancy_norm$obesity, main = "Obesity")
+hist(life_expectancy_norm$measles, main = "Measles Vaccine")
+hist(life_expectancy_norm$polio, main = "Polio Vaccine")
+hist(life_expectancy_norm$diphtheria, main = "Diptheria Vaccine")
+hist(life_expectancy_norm$water, main = "Drinkable Water Access")
+hist(life_expectancy_norm$gghe.d, main = "Health Expenditure")
+hist(life_expectancy_norm$pop, main = "Population")
+hist(life_expectancy_norm$infant, main = "Infant Mortality Rate")
+hist(life_expectancy_norm$hiv, main = "HIV Prevalence")
+hist(life_expectancy_norm$gni, main = "GNI per Capit")
+hist(life_expectancy_norm$education, main = "Education Expenditure")
+```
+
+We can see that this method had almost no impact on the distribution of the predictor variables. 
+
+Now we will perform multiple regression, ridge regression, and random forest regression and compare resulting RMSEs. We will begin by splitting the data into training and testing subsets to be used to test predictive accuracy of our models. In order to ensure that each country is represented equally we will select every fourth row for a training set, and the remainder will be our testing set. 
+
+
+
+```{r}
+set.seed(1)
+train <- life_expectancy[seq(1, nrow(life_expectancy), 4),]
+test <- anti_join(life_expectancy, train)
+```
+
+Now that we have done that, our training set consists of 422 observations and our testing set of 1263. We may now begin to build our regression models. For our purposes we will set life expectancy as the dependent variable, and all other variables will be used as explanatory variables. We will start with a multiple regression model on our training data. 
+
+```{r}
+mult_reg <- lm(life.expentancy ~ ., train)
+summary(mult_reg)
+par(mfrow = c(2,2))
+plot(mult_reg)
+```
+
+From the above output we can see that the variables: hiv, infant mortality, healthcare spending, water quality, obesity and thinness were the significant variables for the model. Looking at the coefficients, according to the model the average global life expectancy is 69 year, hiv and infant mortality have a negative impact on life expentancy, while health care spending, water quality, thinnes and obesity all have positive impacts. It is somewhat surprising to see the thinness and obesity factors have a positive effect as you would rationally expect the opposite. That may suggest some bias in our model. We can try to refit the model using only the significant variables from this model. It should be noted that the R-square is .9323 suggesting that the model is a very good fit, but that may be due to some underlying bias or variance in the data.
+
+Looking at the diagnostic plots we can learn some things about our model and how it meets the model assumptions. We can see from the Residuals vs fitted plot that there is a horizantal line without any pattern suggesting we meet the assumption of a linear relationship. From the Q-Q plot we can see that residuals are normally distributed. The sclae-location plot we see that there is a slight curve and values seem to be more populated to the right, this may suggest that the homogenity of variance me have been violated. Finally looking at the Residuals vs Leverage plot it seems that some outliers are impacting our model.
+
+Let's see how the model performs using the test data. Now we will include only the significant variables in the model and see if that improves our results.
+
+```{r}
+mult_reg_prediction <- predict(mult_reg, test)
+RMSE(test$life.expentancy, mult_reg_prediction)
+summary(life_expectancy$life.expentancy)
+```
+It appears that our model predicts life expectancy to within 2.3 years of actual life expentancy. 
+
+```{r}
+mult_sig <- lm(life.expentancy ~ hiv + infant + gghe.d + water + thinnes + obesity, train)
+summary(mult_sig)
+par(mfrow = c(2,2))
+plot(mult_sig)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Leaving out the so called unsignificant variables did not have much effect on the model, the beta values all increased by what seems to be a factor of 10 implying little change in how each variable impacts the model, while still remaining small enough to not suggest any overfitting. The intercept value dropped by 1 and teh R-square remained the same. We see that the diagnostic plots are generally the same, other than the Residuals vs Leverage plot, which has dramatically improved and suggests outliers are not affecting our model much.
+
+
+The two factors that seem to influence life expectancy the most, according to this model are hiv prevalence and government health spending. We will use this model to test against our test data as there are less variables used and that is more desirable. on the test data set and evaluate its statistical significance based on the RMSE value
+
+```{r}
+mult_sig_prediction <- predict(mult_sig, test)
+RMSE(test$life.expentancy, mult_sig_prediction)
+
+summary(life_expectancy$life.expentancy)
+```
+
+Our RMSE of 2.3 is not a bad result for our model. As we can see, the range in life expectancy is (42.5, 83,3) with IQR (61.9, 74). The RMSE tells that typically our model will predict life expectancy with an error of roughly 2 years and 4 months. Which is not a terrible result but we can try different fit models to see if this improves. The RMSE is about the same for the model with every variable included, however, this model performed better on the Normality of Residuals distribution diagnostic and would therfore be preferred.
+
+Next we will see if we can improve this model by regularization, or building a Ridge Regression model, tuning lambda to be optimal, using cross validation. We will include all variables for this process.
+
+```{r}
+#model matrix
+
+train_matrix <- model.matrix(mult_reg)
+
+lambdas <- 10^seq(2, -3, by = -.1) #create lambdas to be tested
+
+ridge_reg <- glmnet(train_matrix, train$life.expentancy, nlambda = 25, alpha = 0, family = "gaussian", lambda = lambdas)
+plot(ridge_reg)
+
+#now optimize the lambda value
+
+cv_ridge <- cv.glmnet(train_matrix, train$life.expentancy, alpha = 0, lambda = lambdas)
+optimal_lambda <- cv_ridge$lambda.min
+optimal_lambda
+
+```
+
+According to the output the optimal lambda, or tuning parameter is: 0.125. We will use that to build our ridge regression model. And create functions to compute R-square and RMSE of our model.
+
+```{r}
+best_ridge <- lmridge(life.expentancy ~., train, K = optimal_lambda, scaling =  "center")
+summary(best_ridge)
+
+ridge_prediction <- predict(best_ridge, test)
+RMSE(test$life.expentancy, ridge_prediction)
+```
+
+The scaling method used in the ridge regression model was centering the predictor variables. We can see from the summary of the model that the variables deemed to be significant were the same as in the multiple linear regressoin model. The average life expectancy globally was predicted to be 69. The coefficients and R-squared values were very similar as well. The RMSE value using our test data was also 2.3, overall the ridge regression model is almost identical to the multiple linear model.
+
+Next we will use Random Forest Regression to see if that is an improved version of our model.
+
+```{r}
+control <- trainControl(method = "repeatedcv", number = 10, repeats = 3)
+set.seed(2)
+mtry <- sqrt(ncol(train))
+tunegrid <- expand.grid(.mtry = mtry)
+rf_default <- train(life.expentancy ~ ., 
+                    data = train, 
+                    method = "rf", 
+                    metric = "RMSE", 
+                    tuneGrid=tunegrid,
+                    trControl = control)
+print(rf_default)
+```
+
+RMSE on the training data is 1.97 and teh R-square value is 95.65 which are both improvements from our other models. Now we will proceed to see how the model performs against test data.
+
+```{r}
+rf_predict <- predict(rf_default, newdata = test, type = "raw", norm.votes = T, 
+                      predict.all = FALSE, nodes = FALSE)
+RMSE(rf_predict, test$life.expentancy)
+```
+
+We note that our RMSE calculated when using test data came out to 1.34, which is a significant improvement from our previous two models. Based on this metric the Random Forest model is our most accurate, however, in some cases someon may prefer to use either the ridge regression or multiple regression models as those are more straightforward. 
+
+
+
+
+
+
+
+
+
